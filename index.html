@@ -1,0 +1,1615 @@
+Below is the main PacePilot app code. It belongs in `App.tsx`.
+
+```tsx
+import { useEffect, useState } from 'react';
+import {
+  Link,
+  Route,
+  Switch,
+  useLocation,
+  Router as WouterRouter,
+} from 'wouter';
+import {
+  Activity,
+  ArrowRight,
+  BatteryMedium,
+  Brain,
+  Check,
+  ChevronRight,
+  CirclePause,
+  CirclePlay,
+  CloudSun,
+  Compass,
+  HeartPulse,
+  History,
+  Home,
+  Info,
+  MapPin,
+  Menu,
+  Play,
+  Route as RouteIcon,
+  Settings as SettingsIcon,
+  ShieldCheck,
+  Sparkles,
+  Square,
+  Thermometer,
+  TimerReset,
+  TrendingUp,
+  Watch,
+  Waves,
+  Wind,
+  X,
+  Zap,
+} from 'lucide-react';
+
+type RunStatus = 'idle' | 'running' | 'paused' | 'complete';
+type BodyState = 'flat' | 'steady' | 'charged';
+type Goal = 'feel-good' | 'build' | 'explore';
+
+type Run = {
+  id: string;
+  dateLabel: string;
+  duration: string;
+  distance: string;
+  pace: string;
+  effort: number;
+  mood: string;
+  routeName: string;
+  adaptiveMoments: number;
+  status: string;
+};
+
+type Settings = {
+  units: 'mi' | 'km';
+  haptics: boolean;
+  autoAdapt: boolean;
+  coachVoice: boolean;
+};
+
+const seededRuns: Run[] = [
+  {
+    id: 'run-1',
+    dateLabel: 'Yesterday',
+    duration: '38:42',
+    distance: '4.21 mi',
+    pace: '9:11 /mi',
+    effort: 6,
+    mood: 'Clear-headed',
+    routeName: 'Creekside loop',
+    adaptiveMoments: 3,
+    status: 'Good finish',
+  },
+  {
+    id: 'run-2',
+    dateLabel: 'Sat, Sep 19',
+    duration: '52:18',
+    distance: '5.64 mi',
+    pace: '9:16 /mi',
+    effort: 7,
+    mood: 'Proud',
+    routeName: 'North ridge',
+    adaptiveMoments: 5,
+    status: 'Long run',
+  },
+  {
+    id: 'run-3',
+    dateLabel: 'Thu, Sep 17',
+    duration: '27:06',
+    distance: '2.81 mi',
+    pace: '9:39 /mi',
+    effort: 4,
+    mood: 'Restored',
+    routeName: 'Park light',
+    adaptiveMoments: 2,
+    status: 'Reset run',
+  },
+];
+
+const defaultSettings: Settings = {
+  units: 'mi',
+  haptics: true,
+  autoAdapt: true,
+  coachVoice: false,
+};
+
+const goals: {
+  id: Goal;
+  label: string;
+  description: string;
+}[] = [
+  {
+    id: 'feel-good',
+    label: 'Feel good',
+    description: 'Leave with more than you brought',
+  },
+  {
+    id: 'build',
+    label: 'Build capacity',
+    description: 'A little more than last time',
+  },
+  {
+    id: 'explore',
+    label: 'Go somewhere',
+    description: 'Let the route make the plan',
+  },
+];
+
+function useStoredState<T>(key: string, fallback: T) {
+  const [value, setValue] = useState<T>(() => {
+    try {
+      const stored = localStorage.getItem(key);
+      return stored ? (JSON.parse(stored) as T) : fallback;
+    } catch {
+      return fallback;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+    } catch {
+      // Local persistence is optional.
+    }
+  }, [key, value]);
+
+  return [value, setValue] as const;
+}
+
+function formatElapsed(totalSeconds: number) {
+  const minutes = Math.floor(totalSeconds / 60)
+    .toString()
+    .padStart(2, '0');
+
+  const seconds = Math.floor(totalSeconds % 60)
+    .toString()
+    .padStart(2, '0');
+
+  return `${minutes}:${seconds}`;
+}
+
+function App() {
+  const [runs, setRuns] = useStoredState<Run[]>(
+    'pacepilot-runs',
+    seededRuns,
+  );
+
+  const [settings, setSettings] = useStoredState<Settings>(
+    'pacepilot-settings',
+    defaultSettings,
+  );
+
+  const [goal, setGoal] = useStoredState<Goal>(
+    'pacepilot-goal',
+    'feel-good',
+  );
+
+  const [location] = useLocation();
+
+  const [runStatus, setRunStatus] = useState<RunStatus>('idle');
+  const [bodyState, setBodyState] = useState<BodyState>('steady');
+  const [elapsed, setElapsed] = useState(0);
+  const [distance, setDistance] = useState(0);
+  const [showMenu, setShowMenu] = useState(false);
+  const [toast, setToast] = useState('');
+
+  useEffect(() => {
+    document.title =
+      location === '/run'
+        ? 'Live run · PacePilot'
+        : 'PacePilot · Adaptive running';
+  }, [location]);
+
+  useEffect(() => {
+    if (runStatus !== 'running') {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      setElapsed((current) => current + 1);
+      setDistance((current) => Math.min(9.99, current + 0.0025));
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, [runStatus]);
+
+  useEffect(() => {
+    if (!toast) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => setToast(''), 2400);
+
+    return () => window.clearTimeout(timeout);
+  }, [toast]);
+
+  const beginRun = () => {
+    setElapsed(0);
+    setDistance(0);
+    setBodyState('steady');
+    setRunStatus('running');
+    setToast('Run started. PacePilot is listening.');
+  };
+
+  const finishRun = () => {
+    const newRun: Run = {
+      id: `run-${Date.now()}`,
+      dateLabel: 'Just now',
+      duration: formatElapsed(elapsed),
+      distance: `${distance.toFixed(2)} mi`,
+      pace: `${
+        elapsed > 0
+          ? Math.round(
+              ((elapsed / 60) / Math.max(distance, 0.1)) * 10,
+            ) / 10
+          : 0
+      } /mi`,
+      effort:
+        bodyState === 'charged'
+          ? 7
+          : bodyState === 'flat'
+            ? 4
+            : 6,
+      mood:
+        bodyState === 'charged'
+          ? 'In the pocket'
+          : bodyState === 'flat'
+            ? 'Taken care of'
+            : 'Present',
+      routeName: 'Adaptive neighborhood loop',
+      adaptiveMoments: Math.max(1, Math.floor(elapsed / 180)),
+      status: 'Saved just now',
+    };
+
+    setRuns((current) => [newRun, ...current].slice(0, 8));
+    setRunStatus('complete');
+    setToast('Run saved. Your next run will know more.');
+  };
+
+  const activePage =
+    location === '/run'
+      ? 'run'
+      : location === '/journal'
+        ? 'journal'
+        : location === '/settings'
+          ? 'settings'
+          : 'home';
+
+  return (
+    <div className="app-shell noise">
+      <div className="mx-auto flex min-h-screen max-w-[1500px]">
+        <aside className="hidden w-[248px] shrink-0 flex-col border-r border-[hsl(var(--border))] bg-[hsl(var(--sidebar))] px-5 py-6 text-[hsl(var(--sidebar-foreground))] md:flex">
+          <Brand />
+
+          <div className="mt-14">
+            <p className="mb-3 px-3 font-mono text-[10px] uppercase tracking-[0.2em] text-[hsl(var(--sidebar-foreground)/.52)]">
+              Your rhythm
+            </p>
+
+            <Navigation activePage={activePage} />
+          </div>
+
+          <div className="mt-auto">
+            <div className="rounded-2xl border border-white/10 bg-white/[.06] p-4">
+              <div className="flex items-center gap-2 text-[hsl(var(--accent))]">
+                <ShieldCheck size={15} />
+                <span className="font-mono text-[10px] uppercase tracking-[.18em]">
+                  Private by design
+                </span>
+              </div>
+
+              <p className="mt-3 text-xs leading-relaxed text-[hsl(var(--sidebar-foreground)/.64)]">
+                Your patterns stay on this device. PacePilot learns your
+                rhythm, not your identity.
+              </p>
+            </div>
+
+            <Link
+              href="/settings"
+              data-testid="link-sidebar-settings"
+              className="mt-5 flex items-center gap-3 px-3 py-3 text-sm text-[hsl(var(--sidebar-foreground)/.64)] transition-colors hover:text-[hsl(var(--sidebar-foreground))]"
+            >
+              <SettingsIcon size={16} />
+              Preferences
+            </Link>
+          </div>
+        </aside>
+
+        <main className="min-w-0 flex-1">
+          <header className="flex items-center justify-between border-b border-[hsl(var(--border))] px-5 py-4 md:hidden">
+            <Brand compact />
+
+            <button
+              type="button"
+              onClick={() => setShowMenu((open) => !open)}
+              data-testid="button-open-menu"
+              className="rounded-xl p-2 text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--secondary))]"
+            >
+              {showMenu ? <X size={20} /> : <Menu size={20} />}
+            </button>
+          </header>
+
+          {showMenu ? (
+            <div className="absolute left-4 right-4 top-[68px] z-30 rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-2 shadow-xl md:hidden">
+              <Navigation
+                activePage={activePage}
+                onNavigate={() => setShowMenu(false)}
+              />
+            </div>
+          ) : null}
+
+          <div className="mx-auto max-w-[1150px] px-5 pb-28 pt-8 sm:px-8 md:px-12 md:pb-12 md:pt-12">
+            <Switch>
+              <Route
+                path="/"
+                component={() => (
+                  <Dashboard
+                    runs={runs}
+                    goal={goal}
+                    setGoal={setGoal}
+                    onBeginRun={beginRun}
+                  />
+                )}
+              />
+
+              <Route
+                path="/run"
+                component={() => (
+                  <RunCockpit
+                    runStatus={runStatus}
+                    setRunStatus={setRunStatus}
+                    elapsed={elapsed}
+                    distance={distance}
+                    bodyState={bodyState}
+                    setBodyState={setBodyState}
+                    onBeginRun={beginRun}
+                    onFinishRun={finishRun}
+                  />
+                )}
+              />
+
+              <Route
+                path="/journal"
+                component={() => <Journal runs={runs} />}
+              />
+
+              <Route
+                path="/settings"
+                component={() => (
+                  <SettingsPage
+                    settings={settings}
+                    setSettings={setSettings}
+                    onSave={() =>
+                      setToast('Preferences saved for your next run.')
+                    }
+                  />
+                )}
+              />
+
+              <Route component={() => <NotFoundPage />} />
+            </Switch>
+          </div>
+        </main>
+      </div>
+
+      <nav className="fixed inset-x-0 bottom-0 z-20 border-t border-[hsl(var(--border))] bg-[hsl(var(--background)/.9)] px-5 py-3 backdrop-blur-xl md:hidden">
+        <Navigation activePage={activePage} mobile />
+      </nav>
+
+      {toast ? (
+        <div
+          role="status"
+          data-testid="status-toast"
+          className="fixed bottom-24 left-1/2 z-40 flex -translate-x-1/2 items-center gap-2 rounded-full bg-[hsl(var(--sidebar))] px-4 py-3 text-xs font-medium text-[hsl(var(--sidebar-foreground))] shadow-2xl md:bottom-8"
+        >
+          <Check size={14} className="text-[hsl(var(--accent))]" />
+          {toast}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function Brand({ compact = false }: { compact?: boolean }) {
+  return (
+    <Link
+      href="/"
+      data-testid="link-brand"
+      className={`flex items-center gap-3 ${compact ? '' : 'px-2'}`}
+    >
+      <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-[hsl(var(--accent))] text-[hsl(var(--accent-foreground))]">
+        <Waves size={19} strokeWidth={2.5} />
+      </span>
+
+      <span className="font-semibold tracking-[-.04em]">
+        PacePilot
+      </span>
+    </Link>
+  );
+}
+
+function Navigation({
+  activePage,
+  mobile = false,
+  onNavigate,
+}: {
+  activePage: string;
+  mobile?: boolean;
+  onNavigate?: () => void;
+}) {
+  const items = [
+    { id: 'home', href: '/', label: 'Today', icon: Home },
+    { id: 'run', href: '/run', label: 'Run', icon: Activity },
+    { id: 'journal', href: '/journal', label: 'Journal', icon: History },
+    {
+      id: 'settings',
+      href: '/settings',
+      label: 'Settings',
+      icon: SettingsIcon,
+    },
+  ];
+
+  return (
+    <div className={mobile ? 'flex items-center justify-around' : 'space-y-1'}>
+      {items.map((item) => {
+        const Icon = item.icon;
+        const active = activePage === item.id;
+
+        return (
+          <Link
+            key={item.id}
+            href={item.href}
+            onClick={onNavigate}
+            data-testid={`link-nav-${item.id}`}
+            className={`sidebar-link flex items-center gap-3 rounded-xl px-3 py-3 text-sm ${
+              mobile
+                ? 'flex-col gap-1 px-2 py-1 text-[10px]'
+                : ''
+            } ${
+              active
+                ? 'bg-[hsl(var(--accent)/.14)] font-semibold text-[hsl(var(--accent))]'
+                : 'text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--secondary)/.6)] hover:text-[hsl(var(--foreground))]'
+            }`}
+          >
+            <Icon size={mobile ? 18 : 17} />
+            <span>{item.label}</span>
+          </Link>
+        );
+      })}
+    </div>
+  );
+}
+
+function Eyebrow({ children }: { children: string }) {
+  return (
+    <p className="font-mono text-[10px] uppercase tracking-[.2em] text-[hsl(var(--muted-foreground))]">
+      {children}
+    </p>
+  );
+}
+
+function Dashboard({
+  runs,
+  goal,
+  setGoal,
+  onBeginRun,
+}: {
+  runs: Run[];
+  goal: Goal;
+  setGoal: (goal: Goal) => void;
+  onBeginRun: () => void;
+}) {
+  const recommendation =
+    goal === 'explore'
+      ? {
+          title: 'The route decides today',
+          subtitle: 'A curious 35-minute wander with a soft edge',
+          duration: '35 min',
+          terrain: 'Parks + side streets',
+          reason:
+            'You have had two structured days. Give your brain somewhere new to go.',
+        }
+      : goal === 'build'
+        ? {
+            title: 'Build, without borrowing tomorrow',
+            subtitle: 'Small controlled surges, then an honest finish',
+            duration: '42 min',
+            terrain: 'Rolling roads',
+            reason:
+              'Your recent easy runs are absorbing well. There is room for a little more today.',
+          }
+        : {
+            title: 'Find your green light',
+            subtitle: 'A run that leaves you better than it found you',
+            duration: '28 min',
+            terrain: 'Flat + shaded',
+            reason:
+              'Your week has carried some load. Today rewards showing up, not proving anything.',
+          };
+
+  return (
+    <div className="page-enter">
+      <div className="flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
+        <div>
+          <Eyebrow>Tuesday · September 22, 2026</Eyebrow>
+
+          <h1 className="mt-3 max-w-[620px] text-4xl font-semibold leading-[.98] tracking-[-.06em] text-[hsl(var(--foreground))] sm:text-6xl">
+            Run the day
+            <br />
+            <span className="text-[hsl(var(--muted-foreground)/.52)]">
+              you actually have.
+            </span>
+          </h1>
+        </div>
+
+        <div className="flex items-center gap-2 text-sm text-[hsl(var(--muted-foreground))]">
+          <CloudSun
+            size={18}
+            className="text-[hsl(var(--accent))]"
+          />
+          <span>57° · Clear, low wind</span>
+        </div>
+      </div>
+
+      <section className="mt-12 grid gap-5 lg:grid-cols-[1.18fr_.82fr]">
+        <div className="relative overflow-hidden rounded-[28px] bg-[hsl(var(--sidebar))] p-6 text-[hsl(var(--sidebar-foreground))] sm:p-8">
+          <div className="absolute -right-16 -top-20 h-64 w-64 rounded-full bg-[hsl(var(--accent)/.15)] blur-2xl" />
+
+          <div className="relative flex items-start justify-between gap-4">
+            <div>
+              <div className="flex items-center gap-2 text-[hsl(var(--accent))]">
+                <Sparkles size={15} />
+                <span className="font-mono text-[10px] uppercase tracking-[.18em]">
+                  PacePilot’s read
+                </span>
+              </div>
+
+              <h2 className="mt-6 max-w-[520px] text-3xl font-semibold leading-[1.02] tracking-[-.05em] sm:text-5xl">
+                {recommendation.title}
+              </h2>
+
+              <p className="mt-4 max-w-[440px] text-sm leading-relaxed text-[hsl(var(--sidebar-foreground)/.65)]">
+                {recommendation.subtitle}
+              </p>
+            </div>
+
+            <div className="hidden h-16 w-16 shrink-0 items-center justify-center rounded-full border border-[hsl(var(--accent)/.38)] text-[hsl(var(--accent))] sm:flex">
+              <Compass size={26} />
+            </div>
+          </div>
+
+          <div className="relative mt-10 grid grid-cols-2 gap-3 border-t border-white/10 pt-5 sm:grid-cols-3">
+            <MiniMetric label="Time" value={recommendation.duration} />
+            <MiniMetric label="Ground" value={recommendation.terrain} />
+            <MiniMetric label="Readiness" value="78%" accent />
+          </div>
+
+          <button
+            type="button"
+            onClick={onBeginRun}
+            data-testid="button-start-recommended"
+            className="pressable relative mt-7 flex w-full items-center justify-between rounded-2xl bg-[hsl(var(--accent))] px-5 py-4 font-semibold text-[hsl(var(--accent-foreground))]"
+          >
+            Start adaptive run
+            <CirclePlay size={22} />
+          </button>
+        </div>
+
+        <div className="rounded-[28px] border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-6 sm:p-8">
+          <div className="flex items-center justify-between">
+            <Eyebrow>Choose your intention</Eyebrow>
+            <Info
+              size={16}
+              className="text-[hsl(var(--muted-foreground))]"
+            />
+          </div>
+
+          <div className="mt-5 space-y-2">
+            {goals.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setGoal(item.id)}
+                data-testid={`button-goal-${item.id}`}
+                className={`pressable flex w-full items-center justify-between rounded-2xl border p-4 text-left ${
+                  goal === item.id
+                    ? 'border-[hsl(var(--accent)/.55)] bg-[hsl(var(--accent)/.1)]'
+                    : 'border-[hsl(var(--border))] bg-transparent hover:bg-[hsl(var(--secondary)/.5)]'
+                }`}
+              >
+                <span>
+                  <span className="block text-sm font-semibold">
+                    {item.label}
+                  </span>
+
+                  <span className="mt-1 block text-xs text-[hsl(var(--muted-foreground))]">
+                    {item.description}
+                  </span>
+                </span>
+
+                <span
+                  className={`flex h-5 w-5 items-center justify-center rounded-full border ${
+                    goal === item.id
+                      ? 'border-[hsl(var(--accent))] bg-[hsl(var(--accent))] text-[hsl(var(--accent-foreground))]'
+                      : 'border-[hsl(var(--border))]'
+                  }`}
+                >
+                  {goal === item.id ? <Check size={12} /> : null}
+                </span>
+              </button>
+            ))}
+          </div>
+
+          <div className="mt-7 flex items-center gap-3 border-t border-[hsl(var(--border))] pt-5">
+            <Brain
+              size={18}
+              className="text-[hsl(var(--accent))]"
+            />
+
+            <p className="text-xs leading-relaxed text-[hsl(var(--muted-foreground))]">
+              {recommendation.reason}
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section className="mt-12">
+        <div className="flex items-end justify-between">
+          <div>
+            <Eyebrow>Signals, not scores</Eyebrow>
+            <h2 className="mt-2 text-2xl font-semibold tracking-[-.04em]">
+              How you’re arriving
+            </h2>
+          </div>
+
+          <Link
+            href="/settings"
+            data-testid="link-edit-signals"
+            className="text-xs font-semibold text-[hsl(var(--accent-foreground))] underline decoration-[hsl(var(--accent)/.55)] underline-offset-4"
+          >
+            Tune signals
+          </Link>
+        </div>
+
+        <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <SignalCard
+            icon={BatteryMedium}
+            label="Battery"
+            value="78%"
+            detail="You’re recovered enough to explore"
+            level={78}
+          />
+
+          <SignalCard
+            icon={HeartPulse}
+            label="Resting pulse"
+            value="54 bpm"
+            detail="Quietest in 12 days"
+            level={88}
+          />
+
+          <SignalCard
+            icon={Thermometer}
+            label="Conditions"
+            value="Good"
+            detail="57° · 9 mph wind"
+            level={68}
+          />
+
+          <SignalCard
+            icon={Wind}
+            label="Headspace"
+            value="Open"
+            detail="You said: clear my head"
+            level={74}
+          />
+        </div>
+      </section>
+
+      <section className="mt-12">
+        <div className="flex items-end justify-between">
+          <div>
+            <Eyebrow>Recent rhythm</Eyebrow>
+            <h2 className="mt-2 text-2xl font-semibold tracking-[-.04em]">
+              Runs that taught you something
+            </h2>
+          </div>
+
+          <Link
+            href="/journal"
+            data-testid="link-see-journal"
+            className="flex items-center gap-1 text-xs font-semibold text-[hsl(var(--foreground))]"
+          >
+            Open journal
+            <ArrowRight size={14} />
+          </Link>
+        </div>
+
+        <div className="mt-5 grid gap-3 lg:grid-cols-3">
+          {runs.slice(0, 3).map((run) => (
+            <RunPreview key={run.id} run={run} />
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function MiniMetric({
+  label,
+  value,
+  accent = false,
+}: {
+  label: string;
+  value: string;
+  accent?: boolean;
+}) {
+  return (
+    <div>
+      <p className="font-mono text-[9px] uppercase tracking-[.18em] text-[hsl(var(--sidebar-foreground)/.46)]">
+        {label}
+      </p>
+
+      <p
+        className={`mt-2 text-sm ${
+          accent
+            ? 'text-[hsl(var(--accent))]'
+            : 'text-[hsl(var(--sidebar-foreground)/.82)]'
+        }`}
+      >
+        {value}
+      </p>
+    </div>
+  );
+}
+
+function SignalCard({
+  icon: Icon,
+  label,
+  value,
+  detail,
+  level,
+}: {
+  icon: typeof BatteryMedium;
+  label: string;
+  value: string;
+  detail: string;
+  level: number;
+}) {
+  return (
+    <div className="rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4">
+      <div className="flex items-center justify-between">
+        <Icon
+          size={17}
+          className="text-[hsl(var(--accent))]"
+        />
+
+        <span className="font-mono text-[10px] text-[hsl(var(--muted-foreground))]">
+          {label}
+        </span>
+      </div>
+
+      <p className="mt-5 text-xl font-semibold tracking-[-.04em]">
+        {value}
+      </p>
+
+      <p className="mt-1 min-h-8 text-xs leading-relaxed text-[hsl(var(--muted-foreground))]">
+        {detail}
+      </p>
+
+      <div className="signal-bar mt-4">
+        <span style={{ width: `${level}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function RunPreview({ run }: { run: Run }) {
+  return (
+    <Link
+      href="/journal"
+      data-testid={`card-run-${run.id}`}
+      className="pressable block rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-5"
+    >
+      <div className="flex items-center justify-between">
+        <span className="font-mono text-[10px] uppercase tracking-[.16em] text-[hsl(var(--muted-foreground))]">
+          {run.dateLabel}
+        </span>
+
+        <span className="rounded-full bg-[hsl(var(--accent)/.12)] px-2 py-1 font-mono text-[9px] uppercase tracking-[.12em] text-[hsl(var(--accent-foreground))]">
+          {run.status}
+        </span>
+      </div>
+
+      <p className="mt-6 text-lg font-semibold tracking-[-.03em]">
+        {run.routeName}
+      </p>
+
+      <div className="mt-5 flex items-end justify-between">
+        <div>
+          <span className="font-mono text-2xl tracking-[-.08em]">
+            {run.distance}
+          </span>
+
+          <span className="ml-2 text-xs text-[hsl(var(--muted-foreground))]">
+            {run.pace}
+          </span>
+        </div>
+
+        <ChevronRight
+          size={18}
+          className="text-[hsl(var(--muted-foreground))]"
+        />
+      </div>
+
+      <div className="mt-4 flex items-center gap-2 text-xs text-[hsl(var(--muted-foreground))]">
+        <Zap
+          size={13}
+          className="text-[hsl(var(--accent))]"
+        />
+        {run.adaptiveMoments} adaptive moments · {run.mood}
+      </div>
+    </Link>
+  );
+}
+
+function RunCockpit({
+  runStatus,
+  setRunStatus,
+  elapsed,
+  distance,
+  bodyState,
+  setBodyState,
+  onBeginRun,
+  onFinishRun,
+}: {
+  runStatus: RunStatus;
+  setRunStatus: (status: RunStatus) => void;
+  elapsed: number;
+  distance: number;
+  bodyState: BodyState;
+  setBodyState: (state: BodyState) => void;
+  onBeginRun: () => void;
+  onFinishRun: () => void;
+}) {
+  const coach =
+    bodyState === 'flat'
+      ? {
+          title: 'Let the run get smaller',
+          copy: 'Ease the effort for two minutes. We can change the route before we change the goal.',
+          color: 'text-[hsl(var(--accent))]',
+        }
+      : bodyState === 'charged'
+        ? {
+            title: 'There’s some extra in the tank',
+            copy: 'Take the next rise with intent. Not a test—just an invitation.',
+            color: 'text-emerald-600',
+          }
+        : {
+            title: 'Stay with this rhythm',
+            copy: 'Your breath and stride are syncing. Keep the effort conversational.',
+            color: 'text-[hsl(var(--accent))]',
+          };
+
+  const pace =
+    elapsed > 0
+      ? Math.max(
+          7.4,
+          9.45 -
+            Math.sin(elapsed / 34) * 0.3 -
+            (bodyState === 'flat'
+              ? -0.4
+              : bodyState === 'charged'
+                ? 0.25
+                : 0),
+        )
+      : 9.2;
+
+  return (
+    <div className="page-enter">
+      <div className="flex items-center justify-between">
+        <div>
+          <Eyebrow>Live adaptive session</Eyebrow>
+
+          <h1 className="mt-3 text-4xl font-semibold tracking-[-.06em] sm:text-6xl">
+            {runStatus === 'complete'
+              ? 'That counts.'
+              : runStatus === 'idle'
+                ? 'Your run, in motion.'
+                : 'Keep listening.'}
+          </h1>
+        </div>
+
+        <div
+          className={`flex items-center gap-2 rounded-full px-3 py-2 font-mono text-[10px] uppercase tracking-[.14em] ${
+            runStatus === 'running'
+              ? 'bg-[hsl(var(--accent)/.14)] text-[hsl(var(--accent-foreground))]'
+              : 'bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))]'
+          }`}
+        >
+          <span
+            className={`h-2 w-2 rounded-full ${
+              runStatus === 'running'
+                ? 'live-pulse bg-[hsl(var(--accent))]'
+                : 'bg-[hsl(var(--muted-foreground)/.45)]'
+            }`}
+          />
+
+          {runStatus === 'running' ? 'listening' : runStatus}
+        </div>
+      </div>
+
+      {runStatus === 'complete' ? (
+        <div className="mt-12 rounded-[28px] bg-[hsl(var(--sidebar))] p-8 text-[hsl(var(--sidebar-foreground))] sm:p-12">
+          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-[hsl(var(--accent))] text-[hsl(var(--accent-foreground))]">
+            <Check size={28} />
+          </div>
+
+          <h2 className="mt-7 text-4xl font-semibold tracking-[-.06em]">
+            You kept the promise
+            <br />
+            without forcing the pace.
+          </h2>
+
+          <div className="mt-10 grid grid-cols-3 gap-4 border-t border-white/10 pt-6">
+            <MiniMetric
+              label="Time"
+              value={formatElapsed(elapsed)}
+            />
+
+            <MiniMetric
+              label="Distance"
+              value={`${distance.toFixed(2)} mi`}
+            />
+
+            <MiniMetric
+              label="Adaptive turns"
+              value={Math.max(
+                1,
+                Math.floor(elapsed / 180),
+              ).toString()}
+            />
+          </div>
+
+          <Link
+            href="/"
+            data-testid="link-back-to-today"
+            className="mt-9 flex w-full items-center justify-between rounded-2xl bg-[hsl(var(--accent))] px-5 py-4 font-semibold text-[hsl(var(--accent-foreground))]"
+          >
+            Back to today
+            <ArrowRight size={20} />
+          </Link>
+        </div>
+      ) : (
+        <>
+          <div className="mt-10 grid gap-5 lg:grid-cols-[1.12fr_.88fr]">
+            <div className="relative overflow-hidden rounded-[28px] bg-[hsl(var(--sidebar))] p-6 text-[hsl(var(--sidebar-foreground))] sm:p-10">
+              <div className="absolute -bottom-24 -right-10 h-72 w-72 rounded-full bg-[hsl(var(--accent)/.12)] blur-3xl" />
+
+              <div className="relative flex items-center justify-between">
+                <div>
+                  <Eyebrow>Adaptive route</Eyebrow>
+
+                  <p className="mt-3 flex items-center gap-2 text-sm text-[hsl(var(--sidebar-foreground)/.72)]">
+                    <MapPin
+                      size={15}
+                      className="text-[hsl(var(--accent))]"
+                    />
+                    Creekside → Fern path
+                  </p>
+                </div>
+
+                <span className="rounded-full border border-white/10 px-3 py-2 font-mono text-[10px] uppercase tracking-[.15em] text-[hsl(var(--sidebar-foreground)/.55)]">
+                  Live
+                </span>
+              </div>
+
+              <div className="relative mt-7 overflow-hidden rounded-2xl border border-white/10 bg-[#1f2938]">
+                <svg
+                  viewBox="0 0 600 270"
+                  className="h-[220px] w-full"
+                >
+                  <path
+                    d="M0 55 C90 105 80 177 176 130 S292 64 326 137 S453 218 600 140"
+                    fill="none"
+                    stroke="rgba(255,255,255,.1)"
+                    strokeWidth="32"
+                    strokeLinecap="round"
+                  />
+
+                  <path
+                    className="route-line"
+                    d="M0 55 C90 105 80 177 176 130 S292 64 326 137 S453 218 600 140"
+                    fill="none"
+                    stroke="#f5a623"
+                    strokeWidth="4"
+                    strokeLinecap="round"
+                  />
+
+                  <circle
+                    cx="326"
+                    cy="137"
+                    r="7"
+                    fill="#f5a623"
+                  />
+
+                  <circle
+                    cx="326"
+                    cy="137"
+                    r="15"
+                    fill="none"
+                    stroke="#f5a623"
+                    strokeOpacity=".35"
+                  />
+                </svg>
+
+                <div className="absolute bottom-3 left-3 flex items-center gap-2 rounded-full bg-[#121a25]/80 px-3 py-2 font-mono text-[10px] text-white/70">
+                  <Compass
+                    size={12}
+                    className="text-[#f5a623]"
+                  />
+                  route bends toward shade
+                </div>
+              </div>
+
+              <div className="relative mt-7 grid grid-cols-3 gap-3">
+                <LiveMetric
+                  label="Time"
+                  value={formatElapsed(elapsed)}
+                />
+
+                <LiveMetric
+                  label="Distance"
+                  value={`${distance.toFixed(2)} mi`}
+                />
+
+                <LiveMetric
+                  label="Pace"
+                  value={`${pace.toFixed(1)} /mi`}
+                />
+              </div>
+            </div>
+
+            <div className="rounded-[28px] border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-6 sm:p-8">
+              <div className="flex items-center gap-2">
+                <Brain
+                  size={17}
+                  className="text-[hsl(var(--accent))]"
+                />
+
+                <Eyebrow>In the moment</Eyebrow>
+              </div>
+
+              <h2
+                className={`mt-6 text-3xl font-semibold leading-[1.02] tracking-[-.05em] ${coach.color}`}
+              >
+                {coach.title}
+              </h2>
+
+              <p className="mt-4 text-sm leading-relaxed text-[hsl(var(--muted-foreground))]">
+                {coach.copy}
+              </p>
+
+              <div className="mt-8 border-t border-[hsl(var(--border))] pt-6">
+                <p className="font-mono text-[10px] uppercase tracking-[.18em] text-[hsl(var(--muted-foreground))]">
+                  How does your body feel?
+                </p>
+
+                <div className="mt-3 grid grid-cols-3 gap-2">
+                  {(
+                    [
+                      ['flat', 'Need ease'],
+                      ['steady', 'Steady'],
+                      ['charged', 'More here'],
+                    ] as [BodyState, string][]
+                  ).map(([value, label]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => setBodyState(value)}
+                      data-testid={`button-body-${value}`}
+                      className={`rounded-xl border px-2 py-3 text-xs font-medium transition-colors ${
+                        bodyState === value
+                          ? 'border-[hsl(var(--accent)/.6)] bg-[hsl(var(--accent)/.1)] text-[hsl(var(--accent-foreground))]'
+                          : 'border-[hsl(var(--border))] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--secondary))]'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-6 flex flex-col gap-3 sm:flex-row">
+            {runStatus === 'idle' ? (
+              <button
+                type="button"
+                onClick={onBeginRun}
+                data-testid="button-start-run"
+                className="pressable flex flex-1 items-center justify-center gap-3 rounded-2xl bg-[hsl(var(--accent))] px-5 py-4 font-semibold text-[hsl(var(--accent-foreground))]"
+              >
+                <Play size={19} fill="currentColor" />
+                Start run
+              </button>
+            ) : runStatus === 'paused' ? (
+              <button
+                type="button"
+                onClick={() => setRunStatus('running')}
+                data-testid="button-resume-run"
+                className="pressable flex flex-1 items-center justify-center gap-3 rounded-2xl bg-[hsl(var(--accent))] px-5 py-4 font-semibold text-[hsl(var(--accent-foreground))]"
+              >
+                <CirclePlay size={20} />
+                Resume run
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setRunStatus('paused')}
+                data-testid="button-pause-run"
+                className="pressable flex flex-1 items-center justify-center gap-3 rounded-2xl bg-[hsl(var(--sidebar))] px-5 py-4 font-semibold text-[hsl(var(--sidebar-foreground))]"
+              >
+                <CirclePause size={20} />
+                Pause for a breath
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={onFinishRun}
+              disabled={runStatus === 'idle'}
+              data-testid="button-end-run"
+              className="pressable flex items-center justify-center gap-2 rounded-2xl border border-[hsl(var(--border))] px-5 py-4 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-35"
+            >
+              <Square size={15} fill="currentColor" />
+              Save & finish
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function LiveMetric({
+  label,
+  value,
+}: {
+  label: string;
+  value: string;
+}) {
+  return (
+    <div>
+      <p className="font-mono text-[9px] uppercase tracking-[.18em] text-[hsl(var(--sidebar-foreground)/.45)]">
+        {label}
+      </p>
+
+      <p className="metric-tick mt-2 font-mono text-lg tracking-[-.06em] text-[hsl(var(--sidebar-foreground)/.9)]">
+        {value}
+      </p>
+    </div>
+  );
+}
+
+function Journal({ runs }: { runs: Run[] }) {
+  return (
+    <div className="page-enter">
+      <Eyebrow>Your run journal</Eyebrow>
+
+      <div className="mt-3 flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
+        <h1 className="text-4xl font-semibold tracking-[-.06em] sm:text-6xl">
+          The pattern
+          <br />
+          <span className="text-[hsl(var(--muted-foreground)/.52)]">
+            is the point.
+          </span>
+        </h1>
+
+        <div className="flex items-center gap-2 text-xs text-[hsl(var(--muted-foreground))]">
+          <TrendingUp
+            size={15}
+            className="text-[hsl(var(--accent))]"
+          />
+          3-week consistency is up 18%
+        </div>
+      </div>
+
+      <div className="mt-12 grid gap-4 sm:grid-cols-3">
+        <JournalStat
+          label="Runs this month"
+          value="11"
+          detail="+3 from last month"
+        />
+
+        <JournalStat
+          label="Average effort"
+          value="5.8"
+          detail="Your sustainable middle"
+        />
+
+        <JournalStat
+          label="Adaptive moments"
+          value="27"
+          detail="Signals turned into decisions"
+        />
+      </div>
+
+      <div className="mt-12">
+        <div className="flex items-center justify-between">
+          <Eyebrow>All sessions</Eyebrow>
+
+          <button
+            type="button"
+            data-testid="button-filter-runs"
+            className="flex items-center gap-2 text-xs text-[hsl(var(--muted-foreground))]"
+          >
+            <TimerReset size={14} />
+            Last 30 days
+          </button>
+        </div>
+
+        <div className="mt-4 space-y-3">
+          {runs.map((run) => (
+            <JournalRow key={run.id} run={run} />
+          ))}
+        </div>
+      </div>
+
+      <div className="mt-10 rounded-2xl border border-dashed border-[hsl(var(--border))] p-6 text-center">
+        <p className="text-sm font-semibold">
+          A run is more than its output.
+        </p>
+
+        <p className="mt-2 text-xs text-[hsl(var(--muted-foreground))]">
+          After your next run, add one sentence about what changed. That is the
+          data PacePilot cannot get from a watch.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function JournalStat({
+  label,
+  value,
+  detail,
+}: {
+  label: string;
+  value: string;
+  detail: string;
+}) {
+  return (
+    <div className="rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-5">
+      <Eyebrow>{label}</Eyebrow>
+
+      <p className="mt-5 font-mono text-4xl tracking-[-.08em]">
+        {value}
+      </p>
+
+      <p className="mt-2 text-xs text-[hsl(var(--muted-foreground))]">
+        {detail}
+      </p>
+    </div>
+  );
+}
+
+function JournalRow({ run }: { run: Run }) {
+  return (
+    <div
+      data-testid={`row-journal-${run.id}`}
+      className="pressable grid gap-4 rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-5 sm:grid-cols-[1.1fr_.8fr_.7fr_auto] sm:items-center"
+    >
+      <div>
+        <p className="font-semibold">{run.routeName}</p>
+
+        <p className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
+          {run.dateLabel} · {run.mood}
+        </p>
+      </div>
+
+      <div>
+        <p className="font-mono text-lg tracking-[-.06em]">
+          {run.distance}
+        </p>
+
+        <p className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
+          {run.duration} · {run.pace}
+        </p>
+      </div>
+
+      <div>
+        <p className="text-xs text-[hsl(var(--muted-foreground))]">
+          Effort
+        </p>
+
+        <div className="mt-2 flex gap-1">
+          {Array.from({ length: 10 }, (_, index) => (
+            <span
+              key={index}
+              className={`h-2 w-2 rounded-full ${
+                index < run.effort
+                  ? 'bg-[hsl(var(--accent))]'
+                  : 'bg-[hsl(var(--secondary))]'
+              }`}
+            />
+          ))}
+        </div>
+      </div>
+
+      <div className="flex items-center gap-2 text-xs text-[hsl(var(--muted-foreground))]">
+        <Zap
+          size={13}
+          className="text-[hsl(var(--accent))]"
+        />
+        {run.adaptiveMoments} moments
+      </div>
+    </div>
+  );
+}
+
+function SettingsPage({
+  settings,
+  setSettings,
+  onSave,
+}: {
+  settings: Settings;
+  setSettings: (settings: Settings) => void;
+  onSave: () => void;
+}) {
+  return (
+    <div className="page-enter max-w-3xl">
+      <Eyebrow>Personal preferences</Eyebrow>
+
+      <h1 className="mt-3 text-4xl font-semibold tracking-[-.06em] sm:text-6xl">
+        Make it
+        <br />
+        <span className="text-[hsl(var(--muted-foreground)/.52)]">
+          sound like you.
+        </span>
+      </h1>
+
+      <p className="mt-5 max-w-lg text-sm leading-relaxed text-[hsl(var(--muted-foreground))]">
+        PacePilot gets better when the guidance fits the way you actually move
+        through the world.
+      </p>
+
+      <section className="mt-12 rounded-[28px] border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-6 sm:p-8">
+        <SettingRow
+          icon={RouteIcon}
+          title="Default units"
+          description="How distance and pace appear"
+        >
+          <div className="flex rounded-xl bg-[hsl(var(--secondary))] p-1">
+            {(['mi', 'km'] as const).map((unit) => (
+              <button
+                key={unit}
+                type="button"
+                onClick={() =>
+                  setSettings({
+                    ...settings,
+                    units: unit,
+                  })
+                }
+                data-testid={`button-unit-${unit}`}
+                className={`rounded-lg px-4 py-2 text-xs font-semibold ${
+                  settings.units === unit
+                    ? 'bg-[hsl(var(--card))] shadow-sm'
+                    : 'text-[hsl(var(--muted-foreground))]'
+                }`}
+              >
+                {unit}
+              </button>
+            ))}
+          </div>
+        </SettingRow>
+
+        <SettingRow
+          icon={Sparkles}
+          title="Adapt the run automatically"
+          description="Let the route and effort respond to your signals"
+        >
+          <Toggle
+            checked={settings.autoAdapt}
+            onChange={() =>
+              setSettings({
+                ...settings,
+                autoAdapt: !settings.autoAdapt,
+              })
+            }
+            testId="toggle-auto-adapt"
+          />
+        </SettingRow>
+
+        <SettingRow
+          icon={Watch}
+          title="Haptic nudges"
+          description="A quiet tap when the plan changes"
+        >
+          <Toggle
+            checked={settings.haptics}
+            onChange={() =>
+              setSettings({
+                ...settings,
+                haptics: !settings.haptics,
+              })
+            }
+            testId="toggle-haptics"
+          />
+        </SettingRow>
+
+        <SettingRow
+          icon={Brain}
+          title="Voice coach"
+          description="Short guidance when you need it, silence when you don’t"
+        >
+          <Toggle
+            checked={settings.coachVoice}
+            onChange={() =>
+              setSettings({
+                ...settings,
+                coachVoice: !settings.coachVoice,
+              })
+            }
+            testId="toggle-coach-voice"
+          />
+        </SettingRow>
+      </section>
+
+      <section className="mt-5 rounded-[28px] border border-[hsl(var(--border))] p-6 sm:p-8">
+        <div className="flex items-start gap-4">
+          <ShieldCheck
+            size={20}
+            className="mt-1 text-[hsl(var(--accent))]"
+          />
+
+          <div>
+            <h2 className="font-semibold">
+              Your signals belong to you
+            </h2>
+
+            <p className="mt-2 text-sm leading-relaxed text-[hsl(var(--muted-foreground))]">
+              PacePilot stores preferences and run reflections on this device.
+              Nothing is sold, scored, or used to compare you with someone else.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <button
+        type="button"
+        onClick={onSave}
+        data-testid="button-save-settings"
+        className="pressable mt-7 flex w-full items-center justify-between rounded-2xl bg-[hsl(var(--sidebar))] px-5 py-4 font-semibold text-[hsl(var(--sidebar-foreground))] sm:w-auto sm:min-w-[220px]"
+      >
+        Save preferences
+        <Check
+          size={18}
+          className="text-[hsl(var(--accent))]"
+        />
+      </button>
+    </div>
+  );
+}
+
+function SettingRow({
+  icon: Icon,
+  title,
+  description,
+  children,
+}: {
+  icon: typeof RouteIcon;
+  title: string;
+  description: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-4 border-b border-[hsl(var(--border))] py-5 first:pt-0 last:border-b-0 last:pb-0 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex items-start gap-4">
+        <Icon
+          size={19}
+          className="mt-0.5 text-[hsl(var(--accent))]"
+        />
+
+        <div>
+          <p className="text-sm font-semibold">{title}</p>
+
+          <p className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
+            {description}
+          </p>
+        </div>
+      </div>
+
+      {children}
+    </div>
+  );
+}
+
+function Toggle({
+  checked,
+  onChange,
+  testId,
+}: {
+  checked: boolean;
+  onChange: () => void;
+  testId: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      onClick={onChange}
+      data-testid={testId}
+      className={`relative h-7 w-12 rounded-full transition-colors ${
+        checked
+          ? 'bg-[hsl(var(--accent))]'
+          : 'bg-[hsl(var(--secondary))]'
+      }`}
+    >
+      <span
+        className={`absolute top-1 h-5 w-5 rounded-full bg-[hsl(var(--card))] shadow-sm transition-transform ${
+          checked ? 'translate-x-6' : 'translate-x-1'
+        }`}
+      />
+    </button>
+  );
+}
+
+function NotFoundPage() {
+  return (
+    <div className="page-enter py-20 text-center">
+      <p className="font-mono text-xs uppercase tracking-[.2em] text-[hsl(var(--muted-foreground))]">
+        Off route
+      </p>
+
+      <h1 className="mt-4 text-4xl font-semibold tracking-[-.06em]">
+        That path is not on the map.
+      </h1>
+
+      <Link
+        href="/"
+        data-testid="link-not-found-home"
+        className="mt-8 inline-flex items-center gap-2 rounded-xl bg-[hsl(var(--sidebar))] px-4 py-3 text-sm font-semibold text-[hsl(var(--sidebar-foreground))]"
+      >
+        Back to today
+        <ArrowRight size={16} />
+      </Link>
+    </div>
+  );
+}
+
+export default function RootApp() {
+  return (
+    <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, '')}>
+      <App />
+    </WouterRouter>
+  );
+}
+```
+
+The app also needs these packages:
+
+```bash
+pnpm add react wouter lucide-react
+```
+
+And the main styling variables need to include:
+
+```css
+:root {
+  --background: 42 35% 94%;
+  --foreground: 220 24% 17%;
+  --border: 39 19% 84%;
+  --card: 43 33% 97%;
+  --primary: 220 31% 22%;
+  --secondary: 39 26% 89%;
+  --muted-foreground: 218 13% 45%;
+  --accent: 34 91% 53%;
+  --accent-foreground: 220 27% 16%;
+  --sidebar: 220 31% 22%;
+  --sidebar-foreground: 42 35% 94%;
+  --radius: 1rem;
+}
+```
+
+This is the current working code, but it still uses demo GPS, weather, and sensor values rather than real wearable or phone data.
